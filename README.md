@@ -7,7 +7,7 @@ It is developed in c++20 a single .h and does not have any dependencies.
 Just do it:
 ```cpp
 #include "fluxy.h"
-RouteStatus user( Request &req, Response &res ) {
+RouteStatus home( Request &req, Response &res ) {
     res.setData( R"( 
         <html>Fluxy is on!</html>
     )" );
