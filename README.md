@@ -19,4 +19,11 @@ int main() {
     app.start( 8080 );
 }
 ```
+Just go to the browser and access http://127.0.0.1:8080
+
+You only need to know 3 classes:
+- Request
+- Response
+- App
+
 
