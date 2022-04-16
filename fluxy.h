@@ -552,14 +552,10 @@ public:
     Route routeOnNotFound;
     list< Route > routes;
     unsigned long int startTime;
-    pthread_t localThread;
+    pthread_t localThread = 0;
     unsigned long int identifier;
 
     ThreadResponse() { finished = false; alive = false; startTime = 0; }
-
-    //~ThreadResponse() {
-    //    finalize();
-    //}
 
     ThreadResponse(int sockfd, const Route& routeOnNotFound, const list<Route>& routes) : sockfd(sockfd), routeOnNotFound(routeOnNotFound),routes(routes) { finished= false; alive = false; startTime = 0; }
     const bool isAlive() { return alive; }
@@ -579,13 +575,17 @@ public:
     const unsigned long int getStartTime() { return startTime; }
     void finalize() {
         try {
-            if( alive ) {
-                pthread_cancel( localThread  );
-                pthread_join( localThread, NULL );
-                close( sockfd );
-                alive = false;
+            if( alive && localThread != 0 ) {
+                if( pthread_cancel( localThread ) == 0 ) { 
+                    pthread_join( localThread, NULL );
+                    cout << "Morreu!" << endl;
+                    alive = false;
+                } else {
+                    alive = true;
+                    cout << "Nao morreu!" << endl;
+                }
                 finished = false;
-                routes.clear();
+                // routes.clear();
                 startTime = 0;
             }
         } catch( exception e ) {
@@ -614,32 +614,16 @@ public:
     }
 };
 void *  thread_response( void * p ) {
-        //pthread_mutex_lock(&__mutex );
         ThreadResponse * this_thread = (ThreadResponse *)p;
         this_thread->alive = true;
         this_thread->finished = false;
-        
         try {        
             Request  req;
             Response res;
             int rcvd;
-            int BUF_SIZE = MAX_REQ_SIZE;
-
-            char * buf =  (char *) malloc( BUF_SIZE );
+            char * buf =  (char *) malloc( MAX_REQ_SIZE );
             garbage_register( this_thread->identifier, buf );
-            
-            /*
-            struct timeval tv;
-            tv.tv_sec = 4;
-            tv.tv_usec = 0;
-
-            if (setsockopt(sockfd, SOL_SOCKET, SO_RCVTIMEO, (const char*)&tv, sizeof( tv )) < 0 ) {
-                LOG_E( "Time out: ",  strerror(errno)  );
-                goto RELEASE_MEM;
-            }
-            */
-
-            rcvd = recv( this_thread->sockfd, buf, BUF_SIZE, 0 );
+            rcvd = recv( this_thread->sockfd, buf, MAX_REQ_SIZE, 0 );
             if (rcvd < 0) { // receive error
                 LOG_E( "recv() returns: ", rcvd );
                 goto RELEASE_MEM;
@@ -650,10 +634,11 @@ void *  thread_response( void * p ) {
                 LOG_E( "Request size is too large. See MAX_REQ_SIZE variable." );
                 goto RELEASE_MEM;
             } else {
-                req.setRawString( string(buf) );
-          //      free( buf );
-          //      buf = 0;
+                if( buf != 0 ) {
+                    req.setRawString( string(buf) );
+                }
             }
+
             bool routeFound = false;
             for (auto route : this_thread->routes) {
                 try {
@@ -737,20 +722,24 @@ public:
         timeoutMonitor.detach();
     }
     void asyncResponse( int sockfd, const Route& routeOnNotFound, const list< Route >& routes ) {
+        
         int i = getNextFreeSlot();
         threads[i].finalize();
         threads[i].setData(sockfd, routeOnNotFound, routes );
+        cout << "i: " << i << endl;
         threads[i].run();
+    
     }
     int getNextFreeSlot() {
         do {
             for( int i = 0; i < max_threads; i++ ) {
                 if( !threads[i].isAlive() ) {
                     threads[i].join();
+                    threads[i].alive = true;
                     return i; 
                 }
             }
-            usleep( 1000 );
+            // usleep( 1000 );
         } while( true );
         return 0;    
     }
@@ -794,10 +783,7 @@ public:
                 LOG_E("Socket creation error: ",sock );
                 return -1;
             }
-            struct timeval tv;
-            tv.tv_sec = 16;
-            tv.tv_usec = 0;
-            setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, (const char*)&tv, sizeof( tv ));
+            
             serv_addr.sin_family = AF_INET;
             serv_addr.sin_port = htons( atoi( port.c_str()) );
             if (inet_pton(AF_INET, domain.c_str(), &serv_addr.sin_addr) <= 0) {
@@ -829,6 +815,7 @@ public:
     }
 
     void asyncRequest( Request req, void (*callback)( Response& ), int sockfd ) {
+        //sleep( 200 );
         Consume::send( sockfd,  req.getRawString() );
         string response;
         if( Consume::recv( sockfd, response ) == 0 ) {
@@ -888,8 +875,12 @@ private:
             LOG_E( "setsockopt() error: ",  strerror(errno)  );
             close(serverSocket);
             return false;
-        }*/
-
+        }
+        struct timeval tv;
+        tv.tv_sec = 4;
+        tv.tv_usec = 0;
+        setsockopt(serverSocket, SOL_SOCKET, SO_RCVTIMEO, (const char*)&tv, sizeof( tv ));
+        */
         if (setsockopt(serverSocket, SOL_SOCKET, SO_REUSEADDR, &yes, sizeof(int)) < 0 ) {
             LOG_E( "setsockopt() error: ",  strerror(errno)  );
             close(serverSocket);
@@ -958,8 +949,9 @@ public:
                 if( sockfd > 0 ) {
                     threadPool.asyncResponse( sockfd, routeOnNotFound, routes );
                 } else {
-                    LOG_E("Accept error: ", strerror(errno) );
+                    //LOG_E("Accept error: ", strerror(errno) );
                 } 
+                //sleep( 1 );
             }
         } catch(exception e ) {
             LOG_E("Exception: ", e.what() );
