@@ -35,14 +35,13 @@ using namespace std::chrono;
 
 #define FLUXY_DEBUG
 #define h(...) #__VA_ARGS__
-#define QUEUE_SIZE 1000000
 #define VERSION     "1.0.1"
 #define MAX_REQ_SIZE 5242880
 
 mutex garbage_mutex;
 mutex log_mutex;
 
-map< unsigned long int, list<void *>> garbage;// = map< unsigned long int, list<void *>>();
+map< unsigned long int, list<void *>> garbage;
 
 map< string, string > acceptedFiles = {
    {"html", "text/html"},
@@ -60,9 +59,6 @@ map< string, string > acceptedFiles = {
    {"webp", "image/webp"}, 
    {"zip", "application/zip"}
 };
-
-pthread_mutex_t __mutex = PTHREAD_MUTEX_INITIALIZER;
-
 
 vector<string> split (string s, string delimiter) {
     size_t pos_start = 0, pos_end, delim_len = delimiter.length();
@@ -108,7 +104,6 @@ bool getDataFromFile(string urlPath, string& chunkData) {
     }
 } 
 
-
 bool isAcceptedFile( string extension ) {
     return ( acceptedFiles.find( extension ) != acceptedFiles.end() );
 }
@@ -122,7 +117,6 @@ typedef enum __Method{
         UNDEF = 5,
         ALL = 6
 } Method;
-
 
 string methodToString( Method m ) {
     if( m == Method::GET )   return "GET";
@@ -167,7 +161,6 @@ enum Color {
     BG_MAGENTA  = 105,
     BG_DEFAULT  = 49
 };
-
 class Modifier {
     Color code;
 public:
@@ -198,30 +191,24 @@ public:
     }
     
     static uint64_t ms() {
-        
         return duration_cast<milliseconds>(system_clock::now().time_since_epoch()).count();
     }
 
     template<class... Args>
     static void info (int lineno, const string& filename, string severe, Modifier bgcolor, Modifier fgcolor,  Args... args ) {
         std::unique_lock<std::mutex> lck (log_mutex);
-        // pthread_mutex_lock( &__log_mutex );
         (cout << bgcolor << fgcolor << "[" << now() << "."<<std::setfill('0') << std::setw(3) << (Log::ms() % 1000) << "] " << severe << " " << "{"<< filename << ":" << lineno << "}" << " " << Modifier(FG_YELLOW) << ... << args) << Modifier(BG_DEFAULT) << Modifier(FG_DEFAULT) << endl;
-        // pthread_mutex_unlock( &__log_mutex );
     }
 };
-
 
 namespace fluxy {
     string format(const string& filename, map<string, string> vars ) {
         string file = "";
-        cout << "Filename: " << filename << endl;
         if( getDataFromFile(filename, file) ) {
             for( auto& [key, value] : vars ) {
                 replaceAll( file, "{{"+key+"}}", value );
             }
         }
-        cout << "File: " << file << endl;
         try {
             smatch match;
             regex r("\\{\\{[a-zA-Z_][a-zA-Z0-9]*\\}\\}");
@@ -241,21 +228,16 @@ private:
     int httpStatus;
     string protocol;
     map<string, string> headers;
-    string payload;
-
-    
+    string payload;    
     void setDefaultHeaderValue() {
         headers["Connection"] = "close";
         headers["Content-Type"] = "text/html";
         httpStatus = 200;        
     }
-
 public:
-
     Response() {
         setDefaultHeaderValue();
     }
-
     Response( string rawString ) {
         try {
             vector<string> response = split(rawString, "\n");
@@ -268,7 +250,6 @@ public:
                 LOG_E("Response first line parse error");
                 return;
             }
-
             httpStatus = atoi( firstLine[1].c_str() );
             protocol = firstLine[0];
             int i = 1;
@@ -285,7 +266,6 @@ public:
                 payload += response[i] + "\n";
                 i++;
             }
-
         } catch( exception& e ) {
             LOG_E( "Bad response raw string: ", e.what() );
         }
@@ -304,8 +284,8 @@ public:
         return raw;
     }
     
-    Response& setStatus( int httpStatus ) { this->httpStatus = httpStatus; return *this; }
-    Response& setData( const string& payload  ) { this->payload = payload; return *this;}
+    Response& setStatus( int httpStatus ) { this->httpStatus = httpStatus;   return *this; }
+    Response& setData( const string& payload  ) { this->payload = payload;   return *this;}
     Response& setData( const stringstream& ss  ) { this->payload = ss.str(); return *this;}
     Response& setData( const string& filename, map<string,string> vars ) { 
         this->payload = fluxy::format(filename, vars );    
@@ -316,8 +296,6 @@ public:
         return *this;
     }
 };
-
-
 
 class Request {
 private:
@@ -372,19 +350,15 @@ private:
             } else {
                 uri = route;
             }
-
         } catch( exception& e ) {
             LOG_E( "Bad request raw string: ", e.what() );
         }
     }
-    
 public:    
     Request() {}
-
     map<string, string> getParams() {
         return parameters;
     }
-
     Request( string rawString ) {
         _parse( rawString );
     }
@@ -394,37 +368,29 @@ public:
     string& operator[](const string& key ) {
         return parameters[key];
     }    
-
     Request& addHeader( string key, string value ) {
         headers[key] = value;
         return *this;
     }    
-    
     string getBody() {
         return payload;
     }
-    
     Method getMethod() { 
         return method;
     }
-
     void setMethod( Method method ) {
         this->method = method;
     }
-    
     Request& setData( string body ) {
         this->payload = body;
         return *this;
     }
-    
     string getUri() {
         return uri;
     }
-
     void setUri( string uri ) {
         this->uri = uri;
     }
-    
     string getRawString(){
         stringstream ss;
         if( parameters.size() > 0 ){
@@ -444,21 +410,8 @@ public:
         
         
         ss << endl;
-
         ss << payload;
         return ss.str();
-    }
-
-    void print() {
-        cout << "Method: " << method << endl;
-        cout << "URI: " << uri << endl;
-        cout << "Protocol: " << protocol << endl;
-        cout << "HEADERS: " << endl;
-        for (auto& [key, value]: headers) {
-            std::cout << key << ": " << value << std::endl;
-        }
-        cout << "PAYLOAD: " << endl;
-        cout << payload << endl;
     }    
 };
 
@@ -485,9 +438,7 @@ public:
                     routeVariable = routeRegex.substr( pos + 1, barPos-pos-1 ); 
                 } else 
                     routeVariable = routeRegex.substr( pos + 1 );
-                
                 replaceAll(routeRegex, "@" + routeVariable, "[^/]+");
-
                 if( routeVariable == "" ) {
                     LOG_W( "No route variable on route: ", route); 
                 }
@@ -557,13 +508,10 @@ public:
     unsigned long int identifier;
     mutex localMutex;
 
-
     ThreadResponse() { finished = false; alive = false; startTime = 0; }
-
     ThreadResponse(int sockfd, const Route& routeOnNotFound, const list<Route>& routes) : sockfd(sockfd), routeOnNotFound(routeOnNotFound),routes(routes) { finished= false; alive = false; startTime = 0; }
     const bool isAlive() { return alive; }
-    const bool isFinished() { return finished; }
-    
+    const bool isFinished() { return finished; }    
     void run() {        
         identifier = rand();
         startTime = time(NULL);
@@ -594,15 +542,12 @@ public:
                         LOG_E("Error on finalize thread: ", identifier );
                     }
                     finished = false;
-                    startTime = 0;
-                    
+                    startTime = 0;                    
                 } else {
                     if( localThread != 0 ) {
                         pthread_join( localThread, NULL );
                     }
                 }
-                pthread_mutex_unlock( &__mutex );
-                
             } catch( exception e ) {
                 LOG_E("Exception: ", e.what() );
             }
@@ -624,7 +569,6 @@ void *  thread_response( void * p ) {
         this_thread->alive = true;
         this_thread->finished = false;
         LOG_D("Thread: ", this_thread->identifier, " started...");
-        
         try {        
             Request  req;
             Response res;
@@ -740,9 +684,7 @@ public:
         timeoutMonitor.detach();
     }
     void asyncResponse( int sockfd, const Route& routeOnNotFound, const list< Route >& routes ) {
-        
         int i = getNextFreeSlot();
-        // cout << "i: " << i << endl;
         threads[i].finalize();
         threads[i].setData(sockfd, routeOnNotFound, routes );
         threads[i].run();    
@@ -757,7 +699,8 @@ public:
                     return i; 
                 }
             }
-            // usleep( 1000 );
+            LOG_E("Thread slot not found. waiting...");
+            sleep( 2 );
         } while( true );
         return 0;    
     }
@@ -796,11 +739,9 @@ public:
             query    = string(what[5].first, what[5].second);
             int sock = 0;
             struct sockaddr_in serv_addr;
-    
             if ((sock = socket(AF_INET, SOCK_STREAM, 0)) < 0) {
                 throw runtime_error("Socket creation error" );
             }
-            
             serv_addr.sin_family = AF_INET;
             serv_addr.sin_port = htons( atoi( port.c_str()) );
             if (inet_pton(AF_INET, domain.c_str(), &serv_addr.sin_addr) <= 0) {
@@ -808,7 +749,6 @@ public:
             }
             if (::connect(sock, (struct sockaddr*)&serv_addr, sizeof(serv_addr)) < 0) {
                 throw runtime_error(string("Conection failed: ") + strerror(errno) );
-                return -1;
             }
             return sock;
         }
@@ -878,20 +818,7 @@ private:
         struct sockaddr_in serverAddr;
 
         serverSocket = socket(AF_INET, SOCK_STREAM, 0);
-        /*
-        struct timeval tv;
-        tv.tv_sec = 25;
-        tv.tv_usec = 0;
-        if (setsockopt(serverSocket, SOL_SOCKET, SO_RCVTIMEO, (const char*)&tv, sizeof( tv )) < 0 ) {
-            LOG_E( "setsockopt() error: ",  strerror(errno)  );
-            close(serverSocket);
-            return false;
-        }
-        struct timeval tv;
-        tv.tv_sec = 4;
-        tv.tv_usec = 0;
-        setsockopt(serverSocket, SOL_SOCKET, SO_RCVTIMEO, (const char*)&tv, sizeof( tv ));
-        */
+        
         if (setsockopt(serverSocket, SOL_SOCKET, SO_REUSEADDR, &yes, sizeof(int)) < 0 ) {
             LOG_E( "setsockopt() error: ",  strerror(errno)  );
             close(serverSocket);
@@ -957,15 +884,8 @@ public:
                 } else {
                     LOG_D("Accept error: ", strerror(errno) );
                 } 
-                /*
-                if( i > 1000 ) {
-                    break;
-                }
-                i++;
-                */
             }
             threadPool.join();
-
         } catch(exception e ) {
             LOG_E("Exception: ", e.what() );
         }
@@ -979,11 +899,9 @@ protected:
     string name;
 public:
     virtual string render() = 0;
-
     string& operator[]( const string& value ) {
         return props[value];
-    } 
-    
+    }     
     Component& setProps( const map<string, string>& props ) {
         this->props = props;
         return *this;
