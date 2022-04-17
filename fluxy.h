@@ -28,19 +28,21 @@
 #include <cerrno>
 #include <filesystem>
 #include <thread>
-
+#include <mutex>
 
 using namespace std;
 using namespace std::chrono;
 
+#define FLUXY_DEBUG
 #define h(...) #__VA_ARGS__
 #define QUEUE_SIZE 1000000
 #define VERSION     "1.0.1"
 #define MAX_REQ_SIZE 5242880
 
+mutex garbage_mutex;
+mutex log_mutex;
 
-
-map< unsigned long int, list<void *>> garbage = map< unsigned long int, list<void *>>();
+map< unsigned long int, list<void *>> garbage;// = map< unsigned long int, list<void *>>();
 
 map< string, string > acceptedFiles = {
    {"html", "text/html"},
@@ -61,7 +63,6 @@ map< string, string > acceptedFiles = {
 
 pthread_mutex_t __mutex = PTHREAD_MUTEX_INITIALIZER;
 
-pthread_mutex_t __log_mutex = PTHREAD_MUTEX_INITIALIZER;
 
 vector<string> split (string s, string delimiter) {
     size_t pos_start = 0, pos_end, delim_len = delimiter.length();
@@ -181,8 +182,11 @@ public:
 #define LOG_W(...) Log::info( __LINE__, __FILE__, "WARN  " ,Modifier(Color::BG_BLACK),Modifier(Color::FG_MAGENTA), __VA_ARGS__ )
 #define LOG_E(...) Log::info( __LINE__, __FILE__, "ERR0R " ,Modifier(Color::BG_BLACK),Modifier(Color::FG_RED), __VA_ARGS__ ) 
 #define LOG_S(...) Log::info( __LINE__, __FILE__, "SERVER" ,Modifier(Color::BG_BLACK),Modifier(Color::FG_BLUE), __VA_ARGS__ )
-
-
+#ifdef FLUXY_DEBUG 
+#define LOG_D(...) Log::info( __LINE__, __FILE__, "SERVER" ,Modifier(Color::BG_BLACK),Modifier(Color::FG_WHITE), __VA_ARGS__ )
+#else
+#define LOG_D(...)
+#endif
 class Log {
 public:
     static string now() {
@@ -200,9 +204,10 @@ public:
 
     template<class... Args>
     static void info (int lineno, const string& filename, string severe, Modifier bgcolor, Modifier fgcolor,  Args... args ) {
-        pthread_mutex_lock( &__log_mutex );
+        std::unique_lock<std::mutex> lck (log_mutex);
+        // pthread_mutex_lock( &__log_mutex );
         (cout << bgcolor << fgcolor << "[" << now() << "."<<std::setfill('0') << std::setw(3) << (Log::ms() % 1000) << "] " << severe << " " << "{"<< filename << ":" << lineno << "}" << " " << Modifier(FG_YELLOW) << ... << args) << Modifier(BG_DEFAULT) << Modifier(FG_DEFAULT) << endl;
-        pthread_mutex_unlock( &__log_mutex );
+        // pthread_mutex_unlock( &__log_mutex );
     }
 };
 
@@ -375,6 +380,11 @@ private:
     
 public:    
     Request() {}
+
+    map<string, string> getParams() {
+        return parameters;
+    }
+
     Request( string rawString ) {
         _parse( rawString );
     }
@@ -520,30 +530,21 @@ typedef struct __thread_param {
 }thread_param;
 
 void garbage_register( unsigned long int identifier, void * ptr ) {
-    pthread_mutex_lock( &__mutex );
+    std::unique_lock<std::mutex> lck (garbage_mutex);
     garbage[identifier].push_back( ptr );
-    pthread_mutex_unlock( &__mutex );
 }
-
-
 void garbage_release( unsigned long int identifier ) {
-    pthread_mutex_lock( &__mutex );
+    std::unique_lock<std::mutex> lck (garbage_mutex);
     for( void * ptr : garbage[identifier] ) {
         if( ptr != NULL) {
             free( ptr );
             ptr = NULL;
         }
     }
+    garbage[identifier].clear();
     garbage.erase( identifier );
-    pthread_mutex_unlock( &__mutex );
 }
-
-
-
 void *  thread_response( void * p );
-
-
-
 class ThreadResponse {
 public:
     bool  finished;
@@ -552,14 +553,17 @@ public:
     Route routeOnNotFound;
     list< Route > routes;
     unsigned long int startTime;
-    pthread_t localThread = 0;
+    pthread_t    localThread = 0;
     unsigned long int identifier;
+    mutex localMutex;
+
 
     ThreadResponse() { finished = false; alive = false; startTime = 0; }
 
     ThreadResponse(int sockfd, const Route& routeOnNotFound, const list<Route>& routes) : sockfd(sockfd), routeOnNotFound(routeOnNotFound),routes(routes) { finished= false; alive = false; startTime = 0; }
     const bool isAlive() { return alive; }
     const bool isFinished() { return finished; }
+    
     void run() {        
         identifier = rand();
         startTime = time(NULL);
@@ -574,42 +578,44 @@ public:
     
     const unsigned long int getStartTime() { return startTime; }
     void finalize() {
-        try {
-            if( alive && localThread != 0 ) {
-                if( pthread_cancel( localThread ) == 0 ) { 
-                    pthread_join( localThread, NULL );
-                    cout << "Morreu!" << endl;
-                    alive = false;
+        LOG_D("Finalize thread: ", identifier );
+        std::unique_lock<std::mutex> lck (localMutex);
+            try {
+                if( alive && localThread != 0 ) {
+                    if( pthread_cancel( localThread ) == 0 ) { 
+                        pthread_join( localThread, NULL );
+                        localThread = 0;
+                        alive = false;
+                        close( sockfd );
+                        garbage_release(identifier);
+                        LOG_D("Finalize by cancel: ", identifier );
+                    } else {
+                        alive = true;
+                        LOG_E("Error on finalize thread: ", identifier );
+                    }
+                    finished = false;
+                    startTime = 0;
+                    
                 } else {
-                    alive = true;
-                    cout << "Nao morreu!" << endl;
+                    if( localThread != 0 ) {
+                        pthread_join( localThread, NULL );
+                    }
                 }
-                finished = false;
-                // routes.clear();
-                startTime = 0;
+                pthread_mutex_unlock( &__mutex );
+                
+            } catch( exception e ) {
+                LOG_E("Exception: ", e.what() );
             }
-        } catch( exception e ) {
-            LOG_E("Exception: ", e.what() );
-        }
-        garbage_release(identifier);
-    }
-
-    void clear() {
-        alive = false;
-        finished = false;
-        routes.resize(0);
-        routes.clear();
-        startTime = 0;
-        garbage_release(identifier);
+            identifier = 0;
     }
 
     void join() {
-        if( finished ) {
+        if( localThread != 0 ) {
             pthread_join( localThread, NULL );
             alive = false;
             finished = false;
-            routes.clear();
             startTime = 0;
+            localThread = 0;
         }
     }
 };
@@ -617,13 +623,18 @@ void *  thread_response( void * p ) {
         ThreadResponse * this_thread = (ThreadResponse *)p;
         this_thread->alive = true;
         this_thread->finished = false;
+        LOG_D("Thread: ", this_thread->identifier, " started...");
+        
         try {        
             Request  req;
             Response res;
             int rcvd;
             char * buf =  (char *) malloc( MAX_REQ_SIZE );
             garbage_register( this_thread->identifier, buf );
+        
             rcvd = recv( this_thread->sockfd, buf, MAX_REQ_SIZE, 0 );
+            LOG_D("Thread: ", this_thread->identifier, " recvd = ", rcvd );
+        
             if (rcvd < 0) { // receive error
                 LOG_E( "recv() returns: ", rcvd );
                 goto RELEASE_MEM;
@@ -688,12 +699,16 @@ void *  thread_response( void * p ) {
         } catch( exception& e ) {
             LOG_E( e.what() );
         } 
-        this_thread->alive = false;
-        this_thread->finished = true;
         //pthread_mutex_unlock(&__mutex );
         RELEASE_MEM:
-        close( this_thread->sockfd );
-        garbage_release( this_thread->identifier );
+        {
+            std::unique_lock<std::mutex> lck (this_thread->localMutex);
+            close( this_thread->sockfd );
+            garbage_release( this_thread->identifier );
+            this_thread->finished = true;
+            this_thread->alive    = false;
+        }
+        LOG_D("Thread: ", this_thread->identifier, " return normal");
         return NULL;
 }
 class ThreadPool {
@@ -702,7 +717,10 @@ public:
     int timeout;
     vector< ThreadResponse > threads;
     jthread timeoutMonitor;
-
+    void join() {
+        for( int i = 0; i < max_threads; i++ ) 
+            threads[i].join();
+    }
     void timeoutCollector() {
         while( true ) {
             for( int i = 0; i < max_threads; i++ ) {
@@ -724,12 +742,12 @@ public:
     void asyncResponse( int sockfd, const Route& routeOnNotFound, const list< Route >& routes ) {
         
         int i = getNextFreeSlot();
+        // cout << "i: " << i << endl;
         threads[i].finalize();
         threads[i].setData(sockfd, routeOnNotFound, routes );
-        cout << "i: " << i << endl;
-        threads[i].run();
-    
+        threads[i].run();    
     }
+
     int getNextFreeSlot() {
         do {
             for( int i = 0; i < max_threads; i++ ) {
@@ -780,18 +798,16 @@ public:
             struct sockaddr_in serv_addr;
     
             if ((sock = socket(AF_INET, SOCK_STREAM, 0)) < 0) {
-                LOG_E("Socket creation error: ",sock );
-                return -1;
+                throw runtime_error("Socket creation error" );
             }
             
             serv_addr.sin_family = AF_INET;
             serv_addr.sin_port = htons( atoi( port.c_str()) );
             if (inet_pton(AF_INET, domain.c_str(), &serv_addr.sin_addr) <= 0) {
-                LOG_E("Invalid address/Address not supported");
-                return -1;
+                throw runtime_error("Invalid address/Address not supported");
             }
             if (::connect(sock, (struct sockaddr*)&serv_addr, sizeof(serv_addr)) < 0) {
-                LOG_E("Connection failed");
+                throw runtime_error(string("Conection failed: ") + strerror(errno) );
                 return -1;
             }
             return sock;
@@ -800,14 +816,15 @@ public:
     }
     static void send( int sockfd, const string & str   ){
         if( ::send(sockfd, str.c_str(), str.size(), MSG_DONTWAIT ) < 0 ) {
-            LOG_E("Consume send error");
+            close( sockfd );
+            throw runtime_error(string("Error on send(): ") + strerror(errno) );
         }
     }
     static int recv( int sockfd, string &str  ) {
         char * buf =  (char *) malloc( MAX_REQ_SIZE );
         if( ::recv(sockfd, buf, MAX_REQ_SIZE, 0 ) < 0 ) {
-            LOG_E("Consume recv error");
-            return -1;
+            close( sockfd );
+            throw runtime_error(string("Error on recv(): ") + strerror(errno) );
         }
         str = string( buf );
         free( buf );
@@ -815,14 +832,12 @@ public:
     }
 
     void asyncRequest( Request req, void (*callback)( Response& ), int sockfd ) {
-        //sleep( 200 );
         Consume::send( sockfd,  req.getRawString() );
         string response;
-        if( Consume::recv( sockfd, response ) == 0 ) {
-            Response res( response );
-            callback( res );
-            close( sockfd );
-        }
+        Consume::recv( sockfd, response );            
+        Response res( response );
+        callback( res );
+        close( sockfd );
     }
 
     AsyncResponse get(  const string & uri, Request &req, void (*callback)( Response& ) ) {
@@ -831,22 +846,18 @@ public:
   
     AsyncResponse fetch( Method method, const string & uri, Request &req, void (*callback)( Response& ) ) {
         pthread_t th = 0;
-        try {
-            string path;
-            string query;
-            int sockfd = Consume::connect(uri, path, query );
-            if( sockfd >= 0 ) {
-                if( path == "" ) path = "/";
-                if( query != "" ) query = "?" + query;
-                req.setUri( path + query );
-                req.setMethod( method );
-                jthread t( &Consume::asyncRequest, this, req, callback, sockfd );
-                th = t.native_handle();
-                return AsyncResponse(th);
-            }
-        } catch( exception & e ) {
-            LOG_E("Fetch exception: ", e.what());
-        }
+        string path;
+        string query;
+        int sockfd = Consume::connect(uri, path, query );
+        if( sockfd >= 0 ) {
+            if( path == "" ) path = "/";
+            if( query != "" ) query = "?" + query;
+            req.setUri( path + query );
+            req.setMethod( method );
+            jthread t( &Consume::asyncRequest, this, req, callback, sockfd );
+            th = t.native_handle();
+            return AsyncResponse(th);
+        } 
         return AsyncResponse(0);
     }
 };
@@ -906,13 +917,7 @@ private:
         return true;
     }    
 public:
-
-    
-
-    App() {
-
-    }
-    
+    App() {}
     void addRoute( const Route & route ) {
         routes.push_back( route );
     }
@@ -944,19 +949,52 @@ public:
             if( !initialize( port ) )
                 return;
             LOG_S( "Fluxy (v", VERSION,") web server started at http://127.0.0.1:", port );
+            int i = 0;
             while( true ) {
                 int sockfd = accept(serverSocket, (struct sockaddr *)&clientaddr, &addrlen);
                 if( sockfd > 0 ) {
                     threadPool.asyncResponse( sockfd, routeOnNotFound, routes );
                 } else {
-                    //LOG_E("Accept error: ", strerror(errno) );
+                    LOG_D("Accept error: ", strerror(errno) );
                 } 
-                //sleep( 1 );
+                /*
+                if( i > 1000 ) {
+                    break;
+                }
+                i++;
+                */
             }
+            threadPool.join();
+
         } catch(exception e ) {
             LOG_E("Exception: ", e.what() );
         }
     }
 };
 
+class Component {
+protected:
+    map<string, string> props;
+    string value;
+    string name;
+public:
+    virtual string render() = 0;
+
+    string& operator[]( const string& value ) {
+        return props[value];
+    } 
+    
+    Component& setProps( const map<string, string>& props ) {
+        this->props = props;
+        return *this;
+    }
+    map<string, string> getProps() {
+        return props;
+    }
+    string getName() { return name; }
+    string getValue() { return value; }
+    void setName(string name) {
+        this->name = name;
+    }
+};
 #endif
