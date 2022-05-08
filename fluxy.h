@@ -33,7 +33,7 @@
 using namespace std;
 using namespace std::chrono;
 
-#define FLUXY_DEBUG
+//#define FLUXY_DEBUG
 #define h(...) #__VA_ARGS__
 #define VERSION     "1.0.1"
 #define MAX_REQ_SIZE 5242880
@@ -176,7 +176,7 @@ public:
 #define LOG_E(...) Log::info( __LINE__, __FILE__, "ERR0R " ,Modifier(Color::BG_BLACK),Modifier(Color::FG_RED), __VA_ARGS__ ) 
 #define LOG_S(...) Log::info( __LINE__, __FILE__, "SERVER" ,Modifier(Color::BG_BLACK),Modifier(Color::FG_BLUE), __VA_ARGS__ )
 #ifdef FLUXY_DEBUG 
-#define LOG_D(...) Log::info( __LINE__, __FILE__, "SERVER" ,Modifier(Color::BG_BLACK),Modifier(Color::FG_WHITE), __VA_ARGS__ )
+#define LOG_D(...) Log::info( __LINE__, __FILE__, "DEBUG " ,Modifier(Color::BG_BLACK),Modifier(Color::FG_WHITE), __VA_ARGS__ )
 #else
 #define LOG_D(...)
 #endif
@@ -201,26 +201,138 @@ public:
     }
 };
 
+
+class Component {
+protected:
+    map<string, string> props;
+    list< Component * > inside;
+    string name;
+public:
+    virtual string render() = 0;
+    string& operator[]( const string& value ) {
+        return props[value];
+    }     
+    Component& setProps( const map<string, string>& props ) {
+        this->props = props;
+        return *this;
+    }
+    map<string, string> getProps() {
+        return props;
+    }
+    string getName() { return name; }
+    void setName(string name) {
+        this->name = name;
+    }
+    string expandProps() {
+        stringstream ss;
+        for( auto &[key, value] : props )
+            ss << key << "=" << "\"" << value << "\" ";
+        return ss.str();
+    }
+};
+
 namespace fluxy {
-    string format(const string& filename, map<string, string> vars ) {
+    string format(const string& filename, const list< Component * >& vars ) {
         string file = "";
-        if( getDataFromFile(filename, file) ) {
-            for( auto& [key, value] : vars ) {
-                replaceAll( file, "{{"+key+"}}", value );
-            }
-        }
         try {
+            if( !getDataFromFile(filename, file) )
+                return "";
             smatch match;
-            regex r("\\{\\{[a-zA-Z_][a-zA-Z0-9]*\\}\\}");
+            string componentName = "";
+            regex r("<([A-Z][a-zA-Z0-9]*) (.*)/>");
             while (regex_search(file, match, r)) {
-                LOG_W( "Variable",  match.str(0), " was not assigned in file ", filename );
-                replaceAll( file, match.str(0), "" );
+                string tag  = string(match[0].first, match[0].second); 
+                string exp1 = string(match[1].first, match[1].second);
+                string exp2 = string(match[2].first, match[2].second);
+                bool insideString = false;
+                for( int i = 0; i < exp2.size(); i++ ) {
+                    if( exp2[i]== '\"' )
+                        insideString = !insideString;
+                    if( insideString && exp2[i]== ' ')
+                        exp2[i] = '%';
+                }
+
+                bool found = false;
+                for( auto& value : vars ) {
+                    regex rg("([0-9]*)([A-Z][a-zA-Z0-9_]*)");
+                    smatch m;
+                    string nameTypeId = string(typeid(*value).name());
+                    string objId = ""; 
+                    if( !value->getProps().contains("id") ) {
+                        cout << "Obj deve conter id" << endl;
+                        return "";
+                    } else {
+                        objId = value->getProps()["id"];
+                    }
+
+                    if( regex_search(nameTypeId, m, rg) )
+                        componentName =string(m[2].first, m[2].second);
+                    else {
+                        cout << "Error on component name: " << string(typeid(*value).name()) << endl;
+                        return "";
+                    }
+                    string params = exp2; 
+                    auto vec_props = split(params, " ");
+                    map<string, string> parameters;
+                    for( auto & p : vec_props ) {
+                        vector<string> param = split( p, "=" );
+                        if( param.size() >= 2 ) {
+                            replaceAll(param[1], "\"", "" );
+                            replaceAll(param[1], "%", " " );
+                            parameters[param[0]] = param[1];
+                        }
+                    }
+                    if( !parameters.contains("id") ) {
+                        cout << "TAG não contem id" << tag << endl;
+                        return "";
+                    }
+                    if( exp1 == componentName ) {
+                        if( parameters["id"] == objId ) {
+                            for( auto& [k, v] : parameters ) {
+                                (*value)[k] = v;
+                            }
+                            replaceAll( file, tag, value->render()  );
+                            found = true;
+                        } 
+                    } 
+                }
+                
+                if( !found ) {
+                    cout << "Tag não resolvida: " << string(match[0].first, match[0].second) << endl;
+                    return "";
+                }
             }
         } catch( exception& e) {
             cout << ("format() error: ") << e.what() << endl;
         }
         return file;
     }
+
+    string format(const string& filename, const list< Component * >& vars, const  map< string, string >& block ) {
+        string file = format( filename, vars );
+        for( auto& [key, value ] : block ) 
+            replaceAll( file, "{{" + key+  "}}", value );
+        smatch match;
+        try {
+            regex r("\\{\\{[a-zA-Z][a-zA-Z0-9_]*\\}\\}");
+            while (regex_search(file, match, r)) {
+                replaceAll( file, string(match[0].first, match[0].second), "" );
+            }
+
+            regex r2("@include\\('(.+)'\\)");
+            while (regex_search(file, match, r2)) {
+                string includeStr;
+                getDataFromFile(string(match[1].first, match[1].second),  includeStr );
+                replaceAll( file, string(match[0].first, match[0].second), includeStr );
+            }
+
+        } catch(...){
+
+        }
+        return file;
+    }
+
+
 }
 
 class Response {
@@ -284,13 +396,21 @@ public:
         return raw;
     }
     
-    Response& setStatus( int httpStatus ) { this->httpStatus = httpStatus;   return *this; }
-    Response& setData( const string& payload  ) { this->payload = payload;   return *this;}
-    Response& setData( const stringstream& ss  ) { this->payload = ss.str(); return *this;}
-    Response& setData( const string& filename, map<string,string> vars ) { 
-        this->payload = fluxy::format(filename, vars );    
+    Response& status( int httpStatus ) { this->httpStatus = httpStatus;   return *this; }
+    Response& data( const string& payload  ) { this->payload = payload;   return *this;}
+    Response& data( const stringstream& ss  ) { this->payload = ss.str(); return *this;}
+    Response& data( const string& filename, const list<Component*>& vars ) { 
+        this->payload = fluxy::format(filename, vars, {} );    
         return *this;
     }
+    Response& data( const string& filename, const list<Component*>& vars, const map<string, string>& block ) { 
+        this->payload = fluxy::format(filename, vars, block );    
+        return *this;
+    }
+    string data() {
+        return payload;
+    }
+
     Response& addHeader( string key, string value ) {
         headers[key] = value;
         return *this;
@@ -337,6 +457,13 @@ private:
                 payload += request[i] + "\n";
                 i++;
             }
+
+            if( headers.contains("Content-Length") ) {
+                int size = atoi( headers["Content-Length"].c_str() );
+                if( size < payload.size() )
+                    payload = payload.substr(0, size );
+            }
+
             vector<string> uri_params = split(route, "?");
             if( uri_params.size() >= 2 ) {
                 vector<string> params = split(uri_params[1], "&");
@@ -358,6 +485,9 @@ public:
     Request() {}
     map<string, string> getParams() {
         return parameters;
+    }
+    map<string, string> getHeaders(){
+        return headers;
     }
     Request( string rawString ) {
         _parse( rawString );
@@ -381,9 +511,12 @@ public:
     void setMethod( Method method ) {
         this->method = method;
     }
-    Request& setData( string body ) {
+    Request& data( string body ) {
         this->payload = body;
         return *this;
+    }
+    string data() {
+        return this->payload;
     }
     string getUri() {
         return uri;
@@ -518,7 +651,7 @@ public:
         pthread_create( &localThread, NULL, thread_response, (void *) this );
     }
 
-    void setData( int sockfd, const Route& routeOnNotFound, const list< Route >& routes ) {
+    void data( int sockfd, const Route& routeOnNotFound, const list< Route >& routes ) {
         this->sockfd = sockfd;
         this->routeOnNotFound = routeOnNotFound;
         this->routes = routes;
@@ -577,8 +710,26 @@ void *  thread_response( void * p ) {
             garbage_register( this_thread->identifier, buf );
         
             rcvd = recv( this_thread->sockfd, buf, MAX_REQ_SIZE, 0 );
-            LOG_D("Thread: ", this_thread->identifier, " recvd = ", rcvd );
-        
+            LOG_I("Thread: ", this_thread->identifier, " recvd = ", rcvd );
+
+            if( rcvd > 0 ) {
+                Request r = Request( string(buf) );
+                if( r.getHeaders().contains("Content-Length") ) {
+                    int len = atoi( r.getHeaders()["Content-Length"].c_str() );
+                    int bsize = r.getBody().size();
+                    if( r.getBody().size() < len ) {
+                        int recvlen = 0;
+                        do {
+                            if( recvlen + bsize < len ) {
+                                int rcvd_s = recv( this_thread->sockfd, buf + rcvd + recvlen, MAX_REQ_SIZE - rcvd - recvlen, 0 );
+                                recvlen += rcvd_s;
+                            } else break;
+                        } while( 1 );
+                    }
+                }
+            }
+
+
             if (rcvd < 0) { // receive error
                 LOG_E( "recv() returns: ", rcvd );
                 goto RELEASE_MEM;
@@ -599,6 +750,7 @@ void *  thread_response( void * p ) {
                 try {
                     regex str_expr( route.getRouteRegex() );
                     string reqUri = req.getUri();
+                    
                     if( regex_match (reqUri,str_expr) ) {
                         if( req.getMethod() == route.getMethod() ||  
                             route.getMethod() == Method::ALL ) {
@@ -614,7 +766,9 @@ void *  thread_response( void * p ) {
                             route.call( req, res );
                         } 
                     } 
-                } catch( exception& e) {
+                } catch( regex_error& e) {
+                    LOG_E( e.what(), " code: ", e.code() );
+                } catch( runtime_error& e ) {
                     LOG_E( e.what() );
                 }
             }
@@ -627,7 +781,7 @@ void *  thread_response( void * p ) {
                     string chunk;
                     res.addHeader( "Content-Type", acceptedFiles[extension] );
                     if( getDataFromFile( uri, chunk ) ) {
-                        res.setData( chunk );
+                        res.data( chunk );
                         routeFound = true;
                     }
                 }
@@ -635,7 +789,7 @@ void *  thread_response( void * p ) {
             if( !routeFound ) {
                 LOG_I("Route not found: ", methodToString( req.getMethod() ), " ", req.getUri());
                 if( this_thread->routeOnNotFound.getRoute() == "" )
-                    res.setStatus(404);
+                    res.status(404);
                 else 
                     this_thread->routeOnNotFound.call( req, res );
             }
@@ -671,7 +825,7 @@ public:
                 if( threads[i].isAlive() &&
                     threads[i].getStartTime() != 0 && 
                     time(NULL) - threads[i].getStartTime() > timeout ) {
-                    LOG_I("Response timeout, finalizing thread: ", i ); 
+                    LOG_D("Response timeout, finalizing thread: ", i ); 
                     threads[i].finalize();
                 }
             }
@@ -686,7 +840,7 @@ public:
     void asyncResponse( int sockfd, const Route& routeOnNotFound, const list< Route >& routes ) {
         int i = getNextFreeSlot();
         threads[i].finalize();
-        threads[i].setData(sockfd, routeOnNotFound, routes );
+        threads[i].data(sockfd, routeOnNotFound, routes );
         threads[i].run();    
     }
 
@@ -892,27 +1046,4 @@ public:
     }
 };
 
-class Component {
-protected:
-    map<string, string> props;
-    string value;
-    string name;
-public:
-    virtual string render() = 0;
-    string& operator[]( const string& value ) {
-        return props[value];
-    }     
-    Component& setProps( const map<string, string>& props ) {
-        this->props = props;
-        return *this;
-    }
-    map<string, string> getProps() {
-        return props;
-    }
-    string getName() { return name; }
-    string getValue() { return value; }
-    void setName(string name) {
-        this->name = name;
-    }
-};
 #endif
