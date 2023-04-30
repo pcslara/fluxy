@@ -8,7 +8,7 @@ Just do it:
 ```cpp
 #include "fluxy.h"
 RouteStatus home( Request &req, Response &res ) {
-    res.setData( 
+    res.data( 
     R"( 
         <html>Fluxy is on!</html>
     )" );
@@ -51,7 +51,7 @@ You can declare variables in url like
 ...
 int main() {
     App app;
-    app.get("/user/@id", home );
+    app.get("/user/@id", user );
     app.start( 8080 );
 }
 ```
